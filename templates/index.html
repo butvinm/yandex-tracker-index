@@ -1,0 +1,27 @@
+<!doctype html>
+<head>
+    <title>Yandex Tracker Index</title>
+    <script
+        src="https://unpkg.com/htmx.org@2.0.4"
+        integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+"
+        crossorigin="anonymous"
+    ></script>
+    <link rel="stylesheet" href="/assets/pico.min.css" />
+    <link rel="icon" href="/assets/logo.svg" />
+</head>
+<body>
+    <main class="container">
+        <input
+            class="form-control"
+            type="search"
+            name="search"
+            placeholder="Begin Typing To Search Issues..."
+            hx-post="/search"
+            hx-trigger="input changed delay:500ms, keyup[key=='Enter'], load"
+            hx-target="#search-results"
+            hx-indicator=".htmx-indicator"
+        />
+
+        <div id="search-results" />
+    </main>
+</body>
