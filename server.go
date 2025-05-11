@@ -1,8 +1,6 @@
 package main
 
 import (
-	// "html/template"
-
 	"html/template"
 	"log"
 	"net/http"
@@ -13,7 +11,12 @@ import (
 	"github.com/blevesearch/bleve/v2"
 )
 
-func main() {
+type IssueDocument struct {
+	Issue Issue
+	// Comments []Comment
+}
+
+func _() {
 	indexPath := os.Getenv("BLEVE_INDEX_PATH")
 
 	index, err := bleve.Open(indexPath)
