@@ -5,14 +5,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"time"
 
 	"net/http"
 	"net/url"
 )
 
-// Format: "2017-07-18T13:33:44.291+0000"
-type Date string
+const MaxPerPage = 50
+
+type Datetime time.Time
+
+func (d *Datetime) UnmarshalJSON(b []byte) (err error) {
+	date, err := time.Parse(`"2006-01-02T15:04:05.000-0700"`, string(b))
+	if err != nil {
+		return err
+	}
+	*d = Datetime(date)
+	return nil
+}
 
 type User struct {
 	Self        string `json:"self"`
@@ -76,32 +86,32 @@ type StatusInfo struct {
 
 type AttachmentInfo struct {
 	Self    string `json:"self"`
-	Id      string `json:"id"`
+	ID      string `json:"id"`
 	Display string `json:"display"`
 }
 
 type Attachment struct {
-	Self      string `json:"self"`
-	Id        string `json:"id"`
-	Name      string `json:"name"`
-	Content   string `json:"content"`
-	Thumbnail string `json:"thumbnail"`
-	CreatedBy *User  `json:"createdBy"`
-	CreatedAt Date   `json:"createdAt"`
-	Mimetype  string `json:"mimetype"`
-	Size      int    `json:"size"`
+	Self      string   `json:"self"`
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Content   string   `json:"content"`
+	Thumbnail string   `json:"thumbnail"`
+	CreatedBy *User    `json:"createdBy"`
+	CreatedAt Datetime `json:"createdAt"`
+	Mimetype  string   `json:"mimetype"`
+	Size      int      `json:"size"`
 }
 
 type Comment struct {
 	Self        string           `json:"self"`
-	Id          int              `json:"id"`
+	ID          int              `json:"id"`
 	LongId      string           `json:"longId"`
 	Text        string           `json:"text"`
 	TextHtml    string           `json:"textHtml"`
 	CreatedBy   *User            `json:"createdBy"`
 	UpdatedBy   *User            `json:"updatedBy"`
-	CreatedAt   Date             `json:"createdAt"`
-	UpdatedAt   Date             `json:"updatedAt"`
+	CreatedAt   Datetime         `json:"createdAt"`
+	UpdatedAt   Datetime         `json:"updatedAt"`
 	Version     int              `json:"version"`
 	Type        string           `json:"type"`
 	Transport   string           `json:"transport"`
@@ -113,7 +123,7 @@ type Issue struct {
 	ID                   string           `json:"id"`
 	Key                  string           `json:"key"`
 	Version              int              `json:"version"`
-	LastCommentUpdatedAt Date             `json:"lastCommentUpdatedAt,omitempty"`
+	LastCommentUpdatedAt Datetime         `json:"lastCommentUpdatedAt,omitempty"`
 	Summary              string           `json:"summary"`
 	Parent               *ParentLink      `json:"parent,omitempty"`
 	Aliases              []string         `json:"aliases,omitempty"`
@@ -122,14 +132,14 @@ type Issue struct {
 	Sprint               []SprintInfo     `json:"sprint,omitempty"`
 	Type                 *IssueType       `json:"type"`
 	Priority             *PriorityInfo    `json:"priority"`
-	CreatedAt            Date             `json:"createdAt"`
+	CreatedAt            Datetime         `json:"createdAt"`
 	Followers            []User           `json:"followers,omitempty"`
 	CreatedBy            *User            `json:"createdBy"`
 	Votes                int              `json:"votes"`
 	Assignee             *User            `json:"assignee,omitempty"`
 	Project              *ProjectDetails  `json:"project,omitempty"`
 	Queue                *QueueInfo       `json:"queue"`
-	UpdatedAt            Date             `json:"updatedAt"`
+	UpdatedAt            Datetime         `json:"updatedAt"`
 	Status               *StatusInfo      `json:"status"`
 	PreviousStatus       *StatusInfo      `json:"previousStatus,omitempty"`
 	Favorite             bool             `json:"favorite"`
@@ -175,7 +185,6 @@ func (t *YandexTrackerClient) newRequest(ctx context.Context, method, pathStr st
 	}
 
 	u = u.ResolveReference(rel)
-	log.Println("url: ", u)
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), body)
 	if err != nil {
 		return nil, err
@@ -190,7 +199,18 @@ func (t *YandexTrackerClient) newRequest(ctx context.Context, method, pathStr st
 	return req, nil
 }
 
-func (t *YandexTrackerClient) do(req *http.Request, target interface{}) error {
+func (t *YandexTrackerClient) doWithRetry(req *http.Request, target any) error {
+	var err error
+	for range 3 {
+		err = t.do(req, target)
+		if err == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+func (t *YandexTrackerClient) do(req *http.Request, target any) error {
 	resp, err := t.Client.Do(req)
 	if err != nil {
 		return err
@@ -218,7 +238,7 @@ func (t *YandexTrackerClient) do(req *http.Request, target interface{}) error {
 }
 
 func (t *YandexTrackerClient) GetIssuesCount(ctx context.Context) (int, error) {
-	req, err := t.newRequest(ctx, "GET", "/v2/issues/_count", nil, nil)
+	req, err := t.newRequest(ctx, "GET", "/v3/issues/_count", nil, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -235,14 +255,57 @@ func (t *YandexTrackerClient) ListIssues(ctx context.Context, page int, perPage 
 	params.Add("page", fmt.Sprintf("%d", page))
 	params.Add("perPage", fmt.Sprintf("%d", perPage))
 	params.Add("expand", "attachments")
-	req, err := t.newRequest(ctx, "GET", "/v2/issues", params, nil)
+	req, err := t.newRequest(ctx, "GET", "/v3/issues", params, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	var issues []*Issue
-	if err := t.do(req, &issues); err != nil {
+	if err := t.doWithRetry(req, &issues); err != nil {
 		return nil, err
 	}
 	return issues, nil
+}
+
+func (t *YandexTrackerClient) ListIssueComments(ctx context.Context, issueKey string, from int, perPage int) ([]*Comment, error) {
+	params := url.Values{}
+	params.Add("from", fmt.Sprintf("%d", from))
+	params.Add("perPage", fmt.Sprintf("%d", perPage))
+	params.Add("expand", "attachments")
+	req, err := t.newRequest(ctx, "GET", fmt.Sprintf("/v3/issues/%s/comments", issueKey), params, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var comments []*Comment
+	if err := t.doWithRetry(req, &comments); err != nil {
+		return nil, err
+	}
+	return comments, nil
+}
+
+func (t *YandexTrackerClient) GetAttachment(ctx context.Context, issueKey string, id string) (*Attachment, error) {
+	req, err := t.newRequest(ctx, "GET", fmt.Sprintf("/v3/issues/%s/attachments/%s", issueKey, id), nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var attachment Attachment
+	if err := t.doWithRetry(req, &attachment); err != nil {
+		return nil, err
+	}
+	return &attachment, nil
+}
+
+func (t *YandexTrackerClient) DownloadAttachment(ctx context.Context, issueKey string, id string, name string) ([]byte, error) {
+	req, err := t.newRequest(ctx, "GET", fmt.Sprintf("/v3/issues/%s/attachments/%s/%s", issueKey, id, name), nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var content []byte
+	if err := t.doWithRetry(req, &content); err != nil {
+		return nil, err
+	}
+	return content, nil
 }

@@ -11,11 +11,6 @@ import (
 	"github.com/blevesearch/bleve/v2"
 )
 
-type IssueDocument struct {
-	Issue Issue
-	// Comments []Comment
-}
-
 func _() {
 	indexPath := os.Getenv("BLEVE_INDEX_PATH")
 
