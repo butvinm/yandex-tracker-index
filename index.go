@@ -132,25 +132,66 @@ func fetchIssuesDocuments(ctx context.Context, client *YandexTrackerClient) ([]*
 	}
 	log.Printf("[DEBUG] Total issues: %d\n", issuesCount)
 
-	var issuesDocuments []*IssueDocument
+	pagesCount := (issuesCount + MaxPerPage - 1) / MaxPerPage
 
-	issuesTotal := 0
-	for page := 1; issuesTotal <= issuesCount; page++ {
-		issues, err := client.ListIssues(ctx, page, MaxPerPage)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, issue := range issues {
-			issueDocument, err := fetchIssueDocument(ctx, client, issue)
-			if err != nil {
-				return nil, err
-			}
-			issuesDocuments = append(issuesDocuments, issueDocument)
-		}
-		issuesTotal += len(issues)
-		log.Printf("[DEBUG] [%d/%d] Issues page indexed\n", issuesTotal, issuesCount)
+	type pageResult struct {
+		issues []*Issue
+		err    error
 	}
+	pageResultChan := make(chan pageResult, pagesCount)
+
+	pageSemaphore := make(chan struct{}, 10)
+
+	for page := 1; page <= pagesCount; page++ {
+		go func(page int) {
+			pageSemaphore <- struct{}{}
+			defer func() { <-pageSemaphore }()
+
+			log.Printf("[INFO] Fetching issues page %d/%d\n", page, pagesCount)
+			pageIssues, err := client.ListIssues(ctx, page, MaxPerPage)
+			pageResultChan <- pageResult{pageIssues, err}
+		}(page)
+	}
+
+	var issues []*Issue
+	for range pagesCount {
+		res := <-pageResultChan
+		if res.err != nil {
+			return nil, res.err
+		}
+		issues = append(issues, res.issues...)
+	}
+
+	log.Printf("[INFO] Collected %d issues, now fetching details\n", len(issues))
+
+	type docResult struct {
+		doc *IssueDocument
+		err error
+	}
+	docResultChan := make(chan docResult, len(issues))
+
+	docSemaphore := make(chan struct{}, 10)
+
+	for _, issue := range issues {
+		go func(issue *Issue) {
+			docSemaphore <- struct{}{}
+			defer func() { <-docSemaphore }()
+
+			doc, err := fetchIssueDocument(ctx, client, issue)
+			docResultChan <- docResult{doc, err}
+		}(issue)
+	}
+
+	var issuesDocuments []*IssueDocument
+	for i := range len(issues) {
+		res := <-docResultChan
+		if res.err != nil {
+			return nil, res.err
+		}
+		log.Printf("[INFO] [%d/%d] Fetched issue document\n", i+1, len(issues))
+		issuesDocuments = append(issuesDocuments, res.doc)
+	}
+
 	return issuesDocuments, nil
 }
 
@@ -161,14 +202,14 @@ func indexIssues(ctx context.Context, client *YandexTrackerClient, index bleve.I
 	}
 
 	for i, issue := range issuesDocuments {
-		log.Printf("[DEBUG] [%d/%d] Indexing issue %s\n", i, len(issuesDocuments), issue.Key)
+		log.Printf("[INFO] [%d/%d] Indexing issue %s\n", i, len(issuesDocuments), issue.Key)
 		if err := index.Index(issue.Key, issue); err != nil {
 			log.Fatal(err)
 		}
 	}
 }
 
-func main() {
+func _() {
 	token := os.Getenv("YT_TOKEN")
 	orgID := os.Getenv("YT_ORG_ID")
 	indexPath := os.Getenv("BLEVE_INDEX_PATH")
@@ -176,10 +217,17 @@ func main() {
 		log.Fatal("YT_TOKEN, YT_ORG_ID and BLEVE_INDEX_PATH must be set")
 	}
 
-	os.RemoveAll(indexPath)
 	mapping := bleve.NewIndexMapping()
-	index, err := bleve.New(indexPath, mapping)
-	if err != nil {
+	index, err := bleve.Open(indexPath)
+	if err == nil {
+		log.Printf("[INFO] Opening existing index at %s", indexPath)
+	} else if err == bleve.ErrorIndexPathExists {
+		log.Printf("[INFO] Creating a new index at %s", indexPath)
+		index, err = bleve.New(indexPath, mapping)
+		if err != nil {
+			log.Fatal(err)
+		}
+	} else {
 		log.Fatal(err)
 	}
 
@@ -187,33 +235,4 @@ func main() {
 	client := NewClient(token, orgID)
 
 	indexIssues(ctx, &client, index)
-
-	// index, err := bleve.Open(indexPath)
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
-
-	// query := bleve.NewMatchQuery("MSSQL")
-	// req := bleve.NewSearchRequest(query)
-	// req.Fields = []string{"*"}
-	// req.Highlight = bleve.NewHighlight()
-
-	// res, err := index.Search(req)
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
-
-	// log.Printf("Successful: %d Total: %d Took: %f sec\n", res.Status.Successful, res.Total, res.Took.Seconds())
-
-	// for i, hit := range res.Hits {
-	// 	fmt.Printf("%d. ID: %s, Score: %f\n", i+1, hit.ID, hit.Score)
-	// 	// fmt.Printf("   Fields: %v\n", hit.Fields) // All stored fields
-	// 	fmt.Printf("   Fragments (Highlights):\n")
-	// 	for field, fragments := range hit.Fragments {
-	// 		fmt.Printf("     %s:\n", field)
-	// 		for _, fragment := range fragments {
-	// 			fmt.Printf("       - %s\n", fragment)
-	// 		}
-	// 	}
-	// }
 }

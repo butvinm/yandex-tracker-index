@@ -11,7 +11,7 @@ import (
 	"github.com/blevesearch/bleve/v2"
 )
 
-func _() {
+func main() {
 	indexPath := os.Getenv("BLEVE_INDEX_PATH")
 
 	index, err := bleve.Open(indexPath)
